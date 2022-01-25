@@ -29,7 +29,7 @@ import time
 from typing import List, Optional, Type, TypeVar, Union
 
 import aiohttp
-from discord.ext import commands
+from disnake.ext import commands
 
 import wavelink
 from wavelink import Node, NodePool, PartialTrack, YouTubeTrack

@@ -34,7 +34,7 @@ from typing import (
     overload,
 )
 
-from discord.ext import commands
+from disnake.ext import commands
 
 from .abc import *
 from .pool import Node, NodePool

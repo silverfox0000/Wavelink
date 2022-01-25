@@ -26,8 +26,8 @@ import datetime
 import logging
 from typing import Any, Dict, Union, Optional
 
-import discord
-from discord.channel import VoiceChannel
+import disnake as discord
+from disnake.channel import VoiceChannel
 
 from . import abc
 from .pool import Node, NodePool

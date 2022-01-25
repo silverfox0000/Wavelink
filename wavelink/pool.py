@@ -40,8 +40,8 @@ from typing import (
 )
 
 import aiohttp
-import discord
-from discord.enums import try_enum
+import disnake as discord
+from disnake.enums import try_enum
 
 from . import abc
 from .enums import *

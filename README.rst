@@ -2,7 +2,7 @@
 you can use this for for disnake
 
 
-.. image:: https://raw.githubusercontent.com/PythonistaGuild/Wavelink/master/logo.png
+
 
 
 .. image:: https://img.shields.io/badge/Python-3.8%20%7C%203.9%20%7C%203.10-blue.svg

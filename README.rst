@@ -1,6 +1,6 @@
 
-you can use this for for disnake
-Apply patches by: `git apply Wavelink-Disnake.patch`
+# Fork of Wavelink for Disnake.py
+### Apply patches by: `git apply Wavelink-Disnake.patch`
 
 
 

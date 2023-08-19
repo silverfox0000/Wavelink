@@ -1,6 +1,7 @@
-"""MIT License
+"""
+MIT License
 
-Copyright (c) 2019-2021 PythonistaGuild
+Copyright (c) 2019-Present PythonistaGuild
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,103 +21,50 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
+from __future__ import annotations
 
 import asyncio
 import base64
-import enum
-import re
+import logging
 import time
-from typing import List, Optional, Type, TypeVar, Union
+from typing import Any, List, Optional, Type, TypeVar, Union, TYPE_CHECKING
 
 import aiohttp
 from disnake.ext import commands
 
 import wavelink
-from wavelink import Node, NodePool, PartialTrack, YouTubeTrack
-from wavelink.utils import MISSING
+from wavelink import Node, NodePool
+
+from .utils import *
 
 
-__all__ = ('SpotifySearchType',
-           'SpotifyClient',
-           'SpotifyTrack',
-           'SpotifyRequestError',
-           'decode_url')
+if TYPE_CHECKING:
+    from wavelink import Player, Playable
 
 
-GRANTURL = 'https://accounts.spotify.com/api/token?grant_type=client_credentials'
-URLREGEX = re.compile(r'https://open\.spotify\.com/(?P<entity>.+)/(?P<identifier>.+)\?')
-BASEURL = 'https://api.spotify.com/v1/{entity}s/{identifier}'
-
-ST = TypeVar("ST", bound="SearchableTrack")
-
-
-def decode_url(url: str) -> Optional[dict]:
-    """Check whether the given URL is a valid Spotify URL and return it's type and ID.
-
-    Parameters
-    ----------
-    url: str
-        The URL to check.
-
-    Returns
-    -------
-    Optional[dict]
-        An mapping of :class:`SpotifySearchType` and Spotify ID. Type will be either track, album or playlist.
-        If type is not track, album or playlist, a special unusable type is returned.
-
-        Could return None if the URL is invalid.
-
-    Examples
-    --------
-
-    .. code:: python3
-
-        from wavelink.ext import spotify
-
-        ...
-
-        decoded = spotify.decode_url("https://open.spotify.com/track/6BDLcvvtyJD2vnXRDi1IjQ?si=e2e5bd7aaf3d4a2a")
-
-        if decoded and decoded['type'] is spotify.SpotifySearchType.track:
-            track = await spotify.SpotifyTrack.search(query=decoded["id"], type=decoded["type"])
-    """
-    match = URLREGEX.match(url)
-    if match:
-        try:
-            type_ = SpotifySearchType[match['entity']]
-        except KeyError:
-            type_ = SpotifySearchType.unusable
-
-        return {'type': type_, 'id': match['identifier']}
-
-    return None
+__all__ = (
+    'SpotifySearchType',
+    'SpotifyClient',
+    'SpotifyTrack',
+    'SpotifyRequestError',
+    'decode_url',
+    'SpotifyDecodePayload'
+)
 
 
-class SpotifySearchType(enum.Enum):
-    """An enum specifying which type to search for with a given Spotify ID.
+logger: logging.Logger = logging.getLogger(__name__)
 
-    track
-        Default search type. Unless specified otherwise this will always be the search type.
-    album
-        Search for an album.
-    playlist
-        Search for a playlist.
-    """
-    track = 0
-    album = 1
-    playlist = 2
-    unusable = 3
+
+ST = TypeVar("ST", bound="Playable")
 
 
 class SpotifyAsyncIterator:
 
-    def __init__(self, *, query: str, limit: int, type: SpotifySearchType, node: Node, partial: bool):
+    def __init__(self, *, query: str, limit: int, type: SpotifySearchType, node: Node):
         self._query = query
         self._limit = limit
         self._type = type
         self._node = node
-
-        self._partial = partial
 
         self._first = True
         self._count = 0
@@ -141,14 +89,13 @@ class SpotifyAsyncIterator:
 
         try:
             track = self._queue.get_nowait()
-        except asyncio.QueueEmpty:
-            raise StopAsyncIteration
+        except asyncio.QueueEmpty as e:
+            raise StopAsyncIteration from e
 
-        if self._partial:
-            track = PartialTrack(query=f'{track["name"]} - {track["artists"][0]["name"]}')
-        else:
-            track = (await wavelink.YouTubeTrack.search(query=f'{track["name"]} -'
-                                                              f' {track["artists"][0]["name"]}'))[0]
+        if track is None:
+            return await self.__anext__()
+
+        track = SpotifyTrack(track)
 
         self._count += 1
         return track
@@ -165,13 +112,291 @@ class SpotifyRequestError(Exception):
         The reason the request failed. Could be None.
     """
 
-    def __init__(self, status: int, reason: str = None):
+    def __init__(self, status: int, reason: Optional[str] = None):
         self.status = status
         self.reason = reason
 
 
+class SpotifyTrack:
+    """A track retrieved via Spotify.
+
+
+    .. container:: operations
+
+        .. describe:: str(track)
+
+            Returns a string representing this SpotifyTrack's name and artists.
+
+        .. describe:: repr(track)
+
+            Returns an official string representation of this SpotifyTrack.
+
+        .. describe:: track == other_track
+
+            Check whether a track is equal to another. Tracks are equal if they both have the same Spotify ID.
+
+
+    Attributes
+    ----------
+    raw: dict[str, Any]
+        The raw payload from Spotify for this track.
+    album: str
+        The album name this track belongs to.
+    images: list[str]
+        A list of URLs to images associated with this track.
+    artists: list[str]
+        A list of artists for this track.
+    genres: list[str]
+        A list of genres associated with this tracks artist.
+    name: str
+        The track name.
+    title: str
+        An alias to name.
+    uri: str
+        The URI for this spotify track.
+    id: str
+        The spotify ID for this track.
+    isrc: str | None
+        The International Standard Recording Code associated with this track.
+    length: int
+        The track length in milliseconds.
+    duration: int
+        Alias to length.
+    explicit: bool
+        Whether this track is explicit or not.
+    """
+
+    __slots__ = (
+        'raw',
+        'album',
+        'images',
+        'artists',
+        'name',
+        'title',
+        'uri',
+        'id',
+        'length',
+        'duration',
+        'explicit',
+        'isrc',
+        '__dict__'
+    )
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.raw: dict[str, Any] = data
+
+        album = data['album']
+        self.album: str = album['name']
+        self.images: list[str] = [i['url'] for i in album['images']]
+
+        artists = data['artists']
+        self.artists: list[str] = [a['name'] for a in artists]
+        # self.genres: list[str] = [a['genres'] for a in artists]
+
+        self.name: str = data['name']
+        self.title: str = self.name
+        self.uri: str = data['uri']
+        self.id: str = data['id']
+        self.length: int = data['duration_ms']
+        self.duration: int = self.length
+        self.isrc: str | None = data.get("external_ids", {}).get('irsc')
+        self.explicit: bool = data.get('explicit', False) in {"true", True}
+
+    def __str__(self) -> str:
+        return f'{self.name} - {self.artists[0]}'
+
+    def __repr__(self) -> str:
+        return f'SpotifyTrack(id={self.id}, isrc={self.isrc}, name={self.name}, duration={self.duration})'
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, SpotifyTrack):
+            return self.id == other.id
+        return NotImplemented
+    
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+    @classmethod
+    async def search(
+            cls,
+            query: str,
+            *,
+            node: Node | None = None,
+    ) -> list['SpotifyTrack']:
+        """|coro|
+
+        Search for tracks with the given query.
+
+        Parameters
+        ----------
+        query: str
+            The Spotify URL to query for.
+        node: Optional[:class:`wavelink.Node`]
+            An optional Node to use to make the search with.
+
+        Returns
+        -------
+        List[:class:`SpotifyTrack`]
+
+        Examples
+        --------
+        Searching for a singular tack to play...
+
+        .. code:: python3
+
+            tracks: list[spotify.SpotifyTrack] = await spotify.SpotifyTrack.search(query=SPOTIFY_URL)
+            if not tracks:
+                # No tracks found, do something?
+                return
+
+            track: spotify.SpotifyTrack = tracks[0]
+
+
+        Searching for all tracks in an album...
+
+        .. code:: python3
+
+            tracks: list[spotify.SpotifyTrack] = await spotify.SpotifyTrack.search(query=SPOTIFY_URL)
+            if not tracks:
+                # No tracks found, do something?
+                return
+
+
+        .. versionchanged:: 2.6.0
+
+            This method no longer takes in the ``type`` parameter. The query provided will be automatically decoded,
+            if the ``type`` returned by :func:`decode_url` is unusable, this method will return an empty :class:`list`
+        """
+        if node is None:
+            node: Node = NodePool.get_connected_node()
+
+        decoded: SpotifyDecodePayload = decode_url(query)
+
+        if not decoded or decoded.type is SpotifySearchType.unusable:
+            logger.debug(f'Spotify search handled an unusable search type for query: "{query}".')
+            return []
+
+        return await node._spotify._search(query=query, type=decoded.type)
+
+    @classmethod
+    def iterator(cls,
+                 *,
+                 query: str,
+                 limit: int | None = None,
+                 node: Node | None = None,
+                 ):
+        """An async iterator version of search.
+
+        This can be useful when searching for large playlists or albums with Spotify.
+
+        Parameters
+        ----------
+        query: str
+            The Spotify URL to search for. Must be of type Playlist or Album.
+        limit: Optional[int]
+            Limit the amount of tracks returned.
+        node: Optional[:class:`wavelink.Node`]
+            An optional node to use when querying for tracks. Defaults to the best available.
+
+        Examples
+        --------
+
+        .. code:: python3
+
+                async for track in spotify.SpotifyTrack.iterator(query=...):
+                    ...
+
+
+        .. versionchanged:: 2.6.0
+
+            This method no longer takes in the ``type`` parameter. The query provided will be automatically decoded,
+            if the ``type`` returned by :func:`decode_url` is not either ``album`` or ``playlist`` this method will
+            raise a :exc:`TypeError`.
+        """
+        decoded: SpotifyDecodePayload = decode_url(query)
+
+        if not decoded or decoded.type is not SpotifySearchType.album and decoded.type is not SpotifySearchType.playlist:
+            raise TypeError('Spotify iterator query must be either a valid Spotify album or playlist URL.')
+
+        if node is None:
+            node = NodePool.get_connected_node()
+
+        return SpotifyAsyncIterator(query=query, limit=limit, node=node, type=decoded.type)
+
+    @classmethod
+    async def convert(cls: Type[ST], ctx: commands.Context, argument: str) -> ST:
+        """Converter which searches for and returns the first track.
+
+        Used as a type hint in a
+        `discord.py command <https://discordpy.readthedocs.io/en/stable/ext/commands/commands.html>`_.
+        """
+        results = await cls.search(argument)
+
+        if not results:
+            raise commands.BadArgument(f"Could not find any songs matching query: {argument}")
+
+        return results[0]
+
+    async def fulfill(self, *, player: Player, cls: Playable, populate: bool) -> Playable:
+        """Used to fulfill the :class:`wavelink.Player` Auto Play Queue.
+
+        .. warning::
+
+            Usually you would not call this directly. Instead you would set :attr:`wavelink.Player.autoplay` to true,
+            and allow the player to fulfill this request automatically.
+
+
+        Parameters
+        ----------
+        player: :class:`wavelink.player.Player`
+            If :attr:`wavelink.Player.autoplay` is enabled, this search will fill the AutoPlay Queue with more tracks.
+        cls
+            The class to convert this Spotify Track to.
+        """
+
+        if not self.isrc:
+            tracks: list[cls] = await cls.search(f'{self.name} - {self.artists[0]}')
+        else:
+            tracks: list[cls] = await cls.search(f'"{self.isrc}"')
+            if not tracks:
+                tracks: list[cls] = await cls.search(f'{self.name} - {self.artists[0]}')
+
+        if not player.autoplay or not populate:
+            return tracks[0]
+
+        node: Node = player.current_node
+        sc: SpotifyClient | None = node._spotify
+
+        if not sc:
+            raise RuntimeError(f"There is no spotify client associated with <{node:!r}>")
+
+        if sc.is_token_expired():
+            await sc._get_bearer_token()
+
+        if len(player._track_seeds) == 5:
+            player._track_seeds.pop(0)
+
+        player._track_seeds.append(self.id)
+
+        url: str = RECURL.format(tracks=','.join(player._track_seeds))
+        async with node._session.get(url=url, headers=sc.bearer_headers) as resp:
+            if resp.status != 200:
+                raise SpotifyRequestError(resp.status, resp.reason)
+
+            data = await resp.json()
+
+        recos = [SpotifyTrack(t) for t in data['tracks']]
+        for reco in recos:
+            if reco in player.auto_queue or reco in player.auto_queue.history:
+                continue
+
+            await player.auto_queue.put_wait(reco)
+
+        return tracks[0]
+
+
 class SpotifyClient:
-    """Spotify client passed to Nodes for searching via Spotify.
+    """Spotify client passed to :class:`wavelink.Node` for searching via Spotify.
 
     Parameters
     ----------
@@ -187,7 +412,7 @@ class SpotifyClient:
 
         self.session = aiohttp.ClientSession()
 
-        self._bearer_token: str = None  # type: ignore
+        self._bearer_token: str | None = None
         self._expiry: int = 0
 
     @property
@@ -209,165 +434,81 @@ class SpotifyClient:
             self._bearer_token = data['access_token']
             self._expiry = time.time() + (int(data['expires_in']) - 10)
 
+    def is_token_expired(self) -> bool:
+        return time.time() >= self._expiry
+
     async def _search(self,
                       query: str,
                       type: SpotifySearchType = SpotifySearchType.track,
                       iterator: bool = False,
-                      ) -> Optional[List[YouTubeTrack]]:
+                      ) -> list[SpotifyTrack]:
 
-        if not self._bearer_token or time.time() >= self._expiry:
+        if self.is_token_expired():
             await self._get_bearer_token()
 
         regex_result = URLREGEX.match(query)
 
-        if not regex_result:
-            url = BASEURL.format(entity=type.name, identifier=query)
-        else:
-            url = BASEURL.format(entity=regex_result['entity'], identifier=regex_result['identifier'])
+        url = (
+            BASEURL.format(
+                entity=regex_result['type'], identifier=regex_result['id']
+            )
+            if regex_result
+            else BASEURL.format(entity=type.name, identifier=query)
+        )
 
         async with self.session.get(url, headers=self.bearer_headers) as resp:
-            if resp.status != 200:
+            if resp.status == 400:
+                return []
+
+            elif resp.status != 200:
                 raise SpotifyRequestError(resp.status, resp.reason)
 
             data = await resp.json()
 
-            if data['type'] == 'track':
-                return await wavelink.YouTubeTrack.search(f'{data["name"]} - {data["artists"][0]["name"]}')
+        if data['type'] == 'track':
+            return [SpotifyTrack(data)]
 
-            elif data['type'] == 'album' and iterator is False:
-                tracks = data['tracks']['items']
-                return [(await wavelink.YouTubeTrack.search(f'{t["name"]} - {t["artists"][0]["name"]}'))[0]
-                        for t in tracks]
-
-            elif data['type'] == 'playlist' and iterator is False:
-                ret = []
-                tracks = data['tracks']['items']
-
-                for track in tracks:
-                    t = track['track']
-                    ret.append((await wavelink.YouTubeTrack.search(f'{t["name"]} - {t["artists"][0]["name"]}'))[0])
-
-                return ret
-
-        if iterator is True:
-            if data['type'] == 'playlist':
-                if data['tracks']['next']:
-                    url = data['tracks']['next']
-
-                    items = [t['track'] for t in data['tracks']['items']]
-                    while True:
-                        async with self.session.get(url, headers=self.bearer_headers) as resp:
-                            data = await resp.json()
-
-                            items.extend([t['track'] for t in data['items']])
-                            if not data['next']:
-                                return items
-
-                            url = data['next']
+        elif data['type'] == 'album':
+            album_data: dict[str, Any] = {
+                                        'album_type': data['album_type'],
+                                        'artists': data['artists'],
+                                        'available_markets': data['available_markets'],
+                                        'external_urls': data['external_urls'],
+                                        'href': data['href'],
+                                        'id': data['id'],
+                                        'images': data['images'],
+                                        'name': data['name'],
+                                        'release_date': data['release_date'],
+                                        'release_date_precision': data['release_date_precision'],
+                                        'total_tracks': data['total_tracks'],
+                                        'type': data['type'],
+                                        'uri': data['uri'],
+                                        }
+            tracks = []
+            for track in data['tracks']['items']:
+                track['album'] = album_data
+                if iterator:
+                    tracks.append(track)
                 else:
-                    return [t['track'] for t in data['tracks']['items']]
-
-            return data['tracks']['items']
-
-
-class SpotifyTrack(YouTubeTrack):
-    """A track retrieved via YouTube with a Spotify URL/ID."""
-
-    @classmethod
-    async def search(
-        cls: Type[ST],
-            query: str,
-            *,
-            type: SpotifySearchType = SpotifySearchType.track,
-            node: Node = MISSING,
-            return_first: bool = False
-    ) -> Union[Optional[ST], List[ST]]:
-        """|coro|
-
-        Search for tracks with the given query.
-
-        Parameters
-        ----------
-        query: str
-            The song to search for.
-        type: Optional[:class:`spotify.SpotifySearchType`]
-            An optional enum value to use when searching with Spotify. Defaults to track.
-        node: Optional[:class:`wavelink.Node`]
-            An optional Node to use to make the search with.
-        return_first: Optional[bool]
-            An optional bool which when set to True will return only the first track found. Defaults to False.
-
-        Returns
-        -------
-        Union[Optional[Track], List[Track]]
-        """
-        if node is MISSING:
-            node = NodePool.get_node()
-
-        if type == SpotifySearchType.track:
-            tracks = await node._spotify._search(query=query, type=type)
-
-            if return_first:
-                return tracks[0]
+                    tracks.append(SpotifyTrack(track))
 
             return tracks
 
-        return await node._spotify._search(query=query, type=type)
+        elif data['type'] == 'playlist':
+            if not iterator:
+                return [SpotifyTrack(t['track']) for t in data['tracks']['items']]
+            if not data['tracks']['next']:
+                return [t['track'] for t in data['tracks']['items']]
 
-    @classmethod
-    def iterator(cls,
-                 *,
-                 query: str,
-                 limit: Optional[int] = None,
-                 type: SpotifySearchType = SpotifySearchType.playlist,
-                 node: Optional[Node] = MISSING,
-                 partial_tracks: bool = False
-                 ):
-        """An async iterator version of search.
+            url = data['tracks']['next']
 
-        This can be useful when searching for large playlists or albums with Spotify.
+            items = [t['track'] for t in data['tracks']['items']]
+            while True:
+                async with self.session.get(url, headers=self.bearer_headers) as resp:
+                    data = await resp.json()
 
-        Parameters
-        ----------
-        query: str
-            The Spotify URL or ID to search for. Must be of type Playlist or Album.
-        limit: Optional[int]
-            Limit the amount of tracks returned.
-        type: :class:`SpotifySearchType`
-            The type of search. Must be either playlist or album. Defaults to playlist.
-        node: Optional[:class:`Node`]
-            An optional node to use when querying for tracks. Defaults to best available.
-        partial_tracks: Optional[bool]
-            Whether or not to create :class:`wavelink.tracks.PartialTrack` objects for search at playtime.
-            This can make queuing large albums or playlists considerably faster, but with less information.
-            Defaults to False.
+                    items.extend([t['track'] for t in data['items']])
+                    if not data['next']:
+                        return items
 
-        Examples
-        --------
-
-        .. code:: python3
-
-                async for track in spotify.SpotifyTrack.iterator(query=..., type=spotify.SpotifySearchType.playlist):
-                    ...
-        """
-
-        if type is not SpotifySearchType.album and type is not SpotifySearchType.playlist:
-            raise TypeError("Iterator search type must be either album or playlist.")
-
-        if node is MISSING:
-            node = NodePool.get_node()
-
-        return SpotifyAsyncIterator(query=query, limit=limit, node=node, type=type, partial=partial_tracks)
-
-    @classmethod
-    async def convert(cls: Type[ST], ctx: commands.Context, argument: str) -> ST:
-        """Converter which searches for and returns the first track.
-
-        Used as a type hint in a discord.py command.
-        """
-        results = await cls.search(argument)
-
-        if not results:
-            raise commands.BadArgument("Could not find any songs matching that query.")
-
-        return results[0]
+                    url = data['next']

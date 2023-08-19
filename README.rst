@@ -1,6 +1,5 @@
 
-> Fork of Wavelink for Disnake.py
-> Apply patches by: `git apply Wavelink-Disnake.patch`
+Fork of Wavelink for Disnake.py
 
 
 
@@ -27,6 +26,8 @@
     :alt: Maintenance
 
 
+
+Apply patches by: `git apply Wavelink-Disnake.patch`
 
 Wavelink is a robust and powerful Lavalink wrapper for `Discord.py <https://github.com/Rapptz/discord.py>`_.
 Wavelink features a fully asynchronous API that's intuitive and easy to use with built in Spotify Support and Node Pool Balancing.

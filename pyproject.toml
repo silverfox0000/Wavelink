@@ -28,5 +28,9 @@ classifiers = [
 [project.urls]
 "Homepage" = "https://github.com/PythonistaGuild/Wavelink"
 
+[tool.setuptools]
+py-modules = []
+
+
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
